@@ -1,7 +1,6 @@
 import { type Block, type KnownBlock, type WebClient } from "@slack/web-api";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import { withTrustedEnvProxyGuardedFetchMode } from "openclaw/plugin-sdk/fetch-runtime";
-import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import { requireRuntimeConfig } from "openclaw/plugin-sdk/plugin-config-runtime";
 import {
   chunkMarkdownTextWithMode,
@@ -9,7 +8,6 @@ import {
   resolveChunkMode,
   resolveTextChunkLimit,
 } from "openclaw/plugin-sdk/reply-chunking";
-import { resolveTextChunksWithFallback } from "openclaw/plugin-sdk/reply-payload";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
@@ -21,10 +19,11 @@ import { resolveSlackAccount } from "./accounts.js";
 import { buildSlackBlocksFallbackText } from "./blocks-fallback.js";
 import { validateSlackBlocksArray } from "./blocks-input.js";
 import { createSlackTokenCacheKey, getSlackWriteClient } from "./client.js";
-import { markdownToSlackMrkdwnChunks } from "./format.js";
 import { SLACK_TEXT_LIMIT } from "./limits.js";
 import { loadOutboundMediaFromUrl } from "./runtime-api.js";
+import { recordSlackThreadParticipation } from "./sent-thread-cache.js";
 import { parseSlackTarget } from "./targets.js";
+import { normalizeSlackThreadTsCandidate } from "./thread-ts.js";
 import { resolveSlackBotToken } from "./token.js";
 import { truncateSlackText } from "./truncate.js";
 const SLACK_UPLOAD_SSRF_POLICY = {
@@ -535,7 +534,7 @@ export async function sendMessageSlack(
     recipient,
     threadTs: opts.threadTs,
   });
-  return await runQueuedSlackSend(queueKey, () =>
+  const result = await runQueuedSlackSend(queueKey, () =>
     sendMessageSlackQueued({
       trimmedMessage,
       opts,
@@ -546,6 +545,11 @@ export async function sendMessageSlack(
       blocks,
     }),
   );
+  const threadTs = normalizeSlackThreadTsCandidate(opts.threadTs);
+  if (threadTs && result.channelId && account.accountId) {
+    recordSlackThreadParticipation(account.accountId, result.channelId, threadTs);
+  }
+  return result;
 }
 
 async function sendMessageSlackQueued(params: {
@@ -611,24 +615,21 @@ async function sendMessageSlackQueuedInner(params: {
     fallbackLimit: SLACK_TEXT_LIMIT,
   });
   const chunkLimit = Math.min(textLimit, SLACK_TEXT_LIMIT);
-  const tableMode = resolveMarkdownTableMode({
-    cfg,
-    channel: "slack",
-    accountId: account.accountId,
-  });
   const chunkMode = resolveChunkMode(cfg, "slack", account.accountId);
   const markdownChunks =
     chunkMode === "newline"
       ? chunkMarkdownTextWithMode(trimmedMessage, chunkLimit, chunkMode)
       : [trimmedMessage];
-  const chunks = markdownChunks.flatMap((markdown) =>
-    markdownToSlackMrkdwnChunks(markdown, chunkLimit, { tableMode }),
-  );
-  const resolvedChunks = resolveTextChunksWithFallback(trimmedMessage, chunks);
+  const resolvedChunks = markdownChunks.length ? markdownChunks : [trimmedMessage];
   const mediaMaxBytes =
     typeof account.config.mediaMaxMb === "number"
       ? account.config.mediaMaxMb * 1024 * 1024
       : undefined;
+
+  function wrapMarkdownBlocks(text: string): (Block | KnownBlock)[] {
+    if (!text.trim()) return [];
+    return [{ type: "markdown" as Block["type"], text: text.trim() }];
+  }
 
   let lastMessageId = "";
   if (opts.mediaUrl) {
@@ -664,6 +665,7 @@ async function sendMessageSlackQueuedInner(params: {
         text: chunk,
         threadTs: opts.threadTs,
         identity: opts.identity,
+        blocks: wrapMarkdownBlocks(chunk),
       });
       lastMessageId = response.ts ?? lastMessageId;
     }
