@@ -79,6 +79,38 @@ import {
 import { finalizeSlackPreviewEdit } from "./preview-finalize.js";
 import type { PreparedSlackMessage } from "./types.js";
 
+// Tool → human-readable status labels for assistant.threads.setStatus
+const TOOL_STATUS_LABELS: Record<string, string> = {
+  exec: "Running command…",
+  Read: "Reading files…",
+  Edit: "Editing files…",
+  Write: "Writing files…",
+  web_search: "Searching the web…",
+  web_fetch: "Fetching page…",
+  memory_search: "Checking memory…",
+  memory_get: "Reading memory…",
+  browser: "Using browser…",
+  message: "Sending message…",
+  tts: "Converting to speech…",
+  image: "Analyzing image…",
+  sessions_spawn: "Spawning sub-agent…",
+  sessions_send: "Messaging sub-agent…",
+  sessions_list: "Checking sessions…",
+  sessions_history: "Reading session history…",
+  session_status: "Checking status…",
+  cron: "Managing schedule…",
+  canvas: "Updating canvas…",
+  nodes: "Checking nodes…",
+  gateway: "Managing gateway…",
+  whatsapp_login: "WhatsApp login…",
+  agents_list: "Listing agents…",
+  process: "Managing process…",
+};
+
+function toolStatusLabel(toolName: string): string {
+  return TOOL_STATUS_LABELS[toolName] ?? `Using ${toolName}…`;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1107,6 +1139,13 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
                 onToolStart: async (payload) => {
                   if (statusReactionsEnabled) {
                     await statusReactions.setTool(payload.name);
+                  }
+                  if (didSetStatus && payload.name) {
+                    await ctx.setSlackThreadStatus({
+                      channelId: message.channel,
+                      threadTs: statusThreadTs,
+                      status: toolStatusLabel(payload.name),
+                    });
                   }
                   await pushPreviewToolProgress(
                     buildChannelProgressDraftLineForEntry(
