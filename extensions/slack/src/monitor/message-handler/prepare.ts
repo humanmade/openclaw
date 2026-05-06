@@ -364,20 +364,8 @@ export async function prepareSlackMessage(params: {
       `slack: routed via bound conversation ${runtimeBinding.conversation.conversationId} -> ${runtimeBinding.targetSessionKey}`,
     );
   }
-  const implicitMentionKinds =
-    isDirectMessage || !ctx.botUserId || !message.thread_ts
-      ? []
-      : [
-          ...implicitMentionKindWhen("reply_to_bot", message.parent_user_id === ctx.botUserId),
-          ...implicitMentionKindWhen(
-            "bot_thread_participant",
-            await hasSlackThreadParticipationWithPersistence({
-              accountId: account.accountId,
-              channelId: message.channel,
-              threadTs: message.thread_ts,
-            }),
-          ),
-        ];
+  // PATCHED: disable implicit thread mentions — require explicit @mention even in threads
+  const implicitMentionKinds: ReturnType<typeof implicitMentionKindWhen> = [];
 
   let resolvedSenderName = normalizeOptionalString(message.username);
   const resolveSenderName = async (): Promise<string> => {
